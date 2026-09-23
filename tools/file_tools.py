@@ -335,6 +335,9 @@ def _resolve_base_dir(
     outright (rather than anchoring them to the process cwd) and fall through to
     the process cwd only as a last resort, deterministically.
     """
+    from agent.runtime_cwd import check_required_cron_workdir
+
+    check_required_cron_workdir()
     root = _authoritative_workspace_root(task_id)
     if container_paths is None:
         container_paths = _uses_container_paths(task_id)

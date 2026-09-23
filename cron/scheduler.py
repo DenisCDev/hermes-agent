@@ -4582,6 +4582,27 @@ class _BoundedCronSessionDB:
         return _bounded
 
 
+def _resolve_job_workdir(job: dict) -> Optional[str]:
+    workdir = (job.get("workdir") or "").strip() or None
+    if workdir and not Path(workdir).is_dir():
+        raise FileNotFoundError(
+            f"Cron workdir no longer exists: {workdir}. Restore it or update the job.")
+    return workdir
+
+
+def _missing_workdir_result(
+    job: dict, error: FileNotFoundError, session_db=None,
+) -> tuple[bool, str, str, str]:
+    job_id = job["id"]
+    logger.error("Job '%s' failed: %s", job_id, error)
+    if session_db is not None:
+        try:
+            _BoundedCronSessionDB(session_db, job_id).close()
+        except Exception:
+            logger.debug("Job '%s': failed to close session store", job_id, exc_info=True)
+    return False, f"# Cron Job: {job.get('name') or job_id} (FAILED)\n\n## Error\n\n{error}\n", "", str(error)
+
+
 def run_job(
     job: dict,
     *,
@@ -4611,6 +4632,10 @@ def run_job(
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+    try:
+        _job_workdir = _resolve_job_workdir(job)
+    except FileNotFoundError as error:
+        return _missing_workdir_result(job, error)
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -4657,14 +4682,6 @@ def run_job(
         # paths. For no_agent jobs this is passed as the subprocess cwd so the
         # Python process cwd is NEVER mutated — avoiding the global-side-effect
         # bug where os.chdir() leaks into concurrent gateway sessions (#69396).
-        _job_workdir = (job.get("workdir") or "").strip() or None
-        if _job_workdir and not Path(_job_workdir).is_dir():
-            logger.warning(
-                "Job '%s': configured workdir %r no longer exists — running without it",
-                job_id, _job_workdir,
-            )
-            _job_workdir = None
-
         try:
             ok, output = _run_job_script_with_claim_heartbeat(
                 job, script_path, workdir=_job_workdir, cancel_event=cancel_event,
@@ -4674,6 +4691,11 @@ def run_job(
                 "Job '%s': script execution raised unexpectedly", job_id,
             )
             ok, output = False, f"Script execution failed: {exc}"
+
+        try:
+            _resolve_job_workdir(job)
+        except FileNotFoundError as error:
+            return _missing_workdir_result(job, error)
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -4878,9 +4900,17 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
+        try:
+            _job_workdir = _resolve_job_workdir(job)
+        except FileNotFoundError as error:
+            return _missing_workdir_result(job, error, _session_db)
         prerun_script = _run_job_script_with_claim_heartbeat(
-            job, script_path, cancel_event=cancel_event,
+            job, script_path, workdir=_job_workdir, cancel_event=cancel_event,
         )
+        try:
+            _resolve_job_workdir(job)
+        except FileNotFoundError as error:
+            return _missing_workdir_result(job, error, _session_db)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -4961,13 +4991,10 @@ def run_job(
     # letting set_session_vars handle the _SESSION_CWD ContextVar set/clear
     # via its existing machinery (clear_session_vars calls clear_session_cwd
     # internally). This avoids a separate import/set/clear dance (#69396).
-    _job_workdir = (job.get("workdir") or "").strip() or None
-    if _job_workdir and not Path(_job_workdir).is_dir():
-        logger.warning(
-            "Job '%s': configured workdir %r no longer exists — running without it",
-            job_id, _job_workdir,
-        )
-        _job_workdir = None
+    try:
+        _job_workdir = _resolve_job_workdir(job)
+    except FileNotFoundError as error:
+        return _missing_workdir_result(job, error, _session_db)
 
     _ctx_tokens = set_session_vars(
         platform="",
@@ -5041,7 +5068,12 @@ def run_job(
     _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
     _cron_session_token = None
     _non_dispatcher_token = None
+    _required_workdir_token = None
     try:
+        from agent.runtime_cwd import check_required_cron_workdir, set_required_cron_workdir
+
+        _required_workdir_token = set_required_cron_workdir(_job_workdir)
+        check_required_cron_workdir()
         if not _cwd_lock_acquired:
             # Fail closed (#79768): running without the lock would let a
             # concurrent workdir job's process-global TERMINAL_CWD override
@@ -5756,6 +5788,7 @@ def run_job(
                 job_name,
             )
 
+        check_required_cron_workdir()
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
@@ -5883,6 +5916,10 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        if _required_workdir_token is not None:
+            from agent.runtime_cwd import reset_required_cron_workdir
+
+            reset_required_cron_workdir(_required_workdir_token)
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir AND actually held
         # the write lock — a fail-closed timeout raised before the env-set,
