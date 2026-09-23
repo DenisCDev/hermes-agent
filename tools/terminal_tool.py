@@ -818,6 +818,9 @@ def _resolve_command_cwd(
 
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
+    from agent.runtime_cwd import check_required_cron_workdir
+
+    check_required_cron_workdir()
     if workdir:
         return workdir
     recorded = get_session_cwd(session_key)
@@ -955,6 +958,10 @@ def _plan_execution(
         raise _Rejected(_error_json(
             f"Invalid command: expected string, got {type(command).__name__}", status="error",
         ))
+
+    from agent.runtime_cwd import check_required_cron_workdir
+
+    check_required_cron_workdir()
 
     config = _get_env_config()
     env_type = "local" if _host_local else config["env_type"]

@@ -1469,14 +1469,17 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
     )
 
 
+class MissingCronWorkdirError(FileNotFoundError):
+    """A configured cron workspace is unavailable at execution time."""
+
+
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
-    """Configured job workdir, or None when unset / no longer a directory (logged)."""
+    """Return the configured workdir, or fail before running in another cwd."""
     workdir = (job.get("workdir") or "").strip() or None
     if workdir and not Path(workdir).is_dir():
-        logger.warning(
-            "Job '%s': configured workdir %r no longer exists — running without it",
-            job_id, workdir)
-        return None
+        raise MissingCronWorkdirError(
+            f"Cron job '{job_id}' workdir no longer exists: {workdir}. "
+            "Restore the directory or update the job before its next run.")
     return workdir
 
 
@@ -2163,6 +2166,14 @@ def _run_doc_header(job: dict, title: str, job_id: str, prompt: str) -> str:
     )
 
 
+def _failed_workdir_run(job: dict, job_id: str, job_name: str, error: MissingCronWorkdirError):
+    from cron.scheduler_diagnostics import format_run_error
+
+    logger.error("Job '%s' failed: %s", job_id, error)
+    output = _run_doc_header(job, f"{job_name} (FAILED)", job_id, str(job.get("prompt") or ""))
+    return False, output + format_run_error(error), "", str(error)
+
+
 _RunResult = tuple[bool, str, str, Optional[str]]
 
 
@@ -2307,6 +2318,9 @@ class _CronRunScope:
         self._non_dispatcher_token = None
 
     def enter(self) -> None:
+        from agent.runtime_cwd import set_required_cron_workdir
+
+        self._required_workdir_token = set_required_cron_workdir(self.workdir)
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
         self._cron_session_token = self._cron_session_var.set("1")
@@ -2317,10 +2331,12 @@ class _CronRunScope:
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
+        from agent.runtime_cwd import reset_required_cron_workdir
         from gateway.session_context import clear_session_vars
         from tools.terminal_tool import clear_session_cwd
 
         clear_session_cwd(self.task_id)
+        reset_required_cron_workdir(self._required_workdir_token)
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
         if self._cron_session_token is not None:
             self._cron_session_var.reset(self._cron_session_token)
@@ -2488,7 +2504,11 @@ def run_job(
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+    try:
+        _resolve_job_workdir(job, job_id)
+        early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+    except MissingCronWorkdirError as error:
+        return _failed_workdir_run(job, job_id, job_name, error)
     if early is not None:
         return early
     from run_agent import AIAgent
@@ -2502,7 +2522,10 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
-    scope = _CronRunScope(job, job_id, execution_id)
+    try:
+        scope = _CronRunScope(job, job_id, execution_id)
+    except MissingCronWorkdirError as error:
+        return _failed_workdir_run(job, job_id, job_name, error)
     try:
         scope.enter()
         if scope.workdir:
@@ -2527,6 +2550,7 @@ def run_job(
         result = _run_agent_with_watchdog(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
+        _resolve_job_workdir(job, job_id)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):

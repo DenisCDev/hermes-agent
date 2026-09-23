@@ -1570,8 +1570,8 @@ def _activate_job_record(job: Dict[str, Any]) -> None:
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     """Workdir -> absolute path, or None when empty. ``~`` expands; relative paths are rejected
-    (cron runs detached from any cwd); must be an existing dir now but is deliberately NOT
-    re-checked at run time (scheduler falls back with a warning). ValueError when invalid."""
+    (cron runs detached from any cwd); must be an existing dir now and at run time.
+    ValueError when invalid."""
     if workdir is None:
         return None
     raw = str(workdir).strip()

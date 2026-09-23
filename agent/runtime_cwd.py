@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
+_REQUIRED_CRON_WORKDIR: ContextVar[str | None] = ContextVar("HERMES_REQUIRED_CRON_WORKDIR", default=None)
 
 # The package/source root (<root>/agent/runtime_cwd.py). A backend launched from or
 # self-spawned into this tree (desktop default) must never let an os.getcwd() fallback
@@ -49,6 +50,21 @@ def reset_session_cwd(token: Token) -> None:
     _SESSION_CWD.reset(token)
 
 
+def set_required_cron_workdir(cwd: str | None) -> Token:
+    return _REQUIRED_CRON_WORKDIR.set(cwd)
+
+
+def reset_required_cron_workdir(token: Token) -> None:
+    _REQUIRED_CRON_WORKDIR.reset(token)
+
+
+def check_required_cron_workdir() -> None:
+    """Stop a cron turn if its original workspace disappears mid-run."""
+    cwd = _REQUIRED_CRON_WORKDIR.get()
+    if cwd and not Path(cwd).is_dir():
+        raise FileNotFoundError(f"Cron workdir no longer exists: {cwd}")
+
+
 def scope_terminal_cwd() -> str:
     """Scope-aware TERMINAL_CWD value (may be empty) — every cwd consumer reads through this.
 
@@ -56,6 +72,7 @@ def scope_terminal_cwd() -> str:
     the process-global env var may hold another profile's. Only an ImportError falls back: an
     active refusal scope must raise, not silently resolve the launch profile's cwd.
     """
+    check_required_cron_workdir()
     try:
         from tools.terminal_scope import terminal_env
     except ImportError:
@@ -89,6 +106,7 @@ def _resolve_configured_cwd(*, override_is_final: bool) -> Path | None:
 
 def resolve_agent_cwd() -> Path:
     """Configured cwd, else the launch dir (os.getcwd()'s OSError on a deleted cwd deliberately propagates)."""
+    check_required_cron_workdir()
     return _resolve_configured_cwd(override_is_final=False) or Path(os.getcwd())
 
 

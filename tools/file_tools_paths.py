@@ -167,6 +167,9 @@ def _resolve_base_dir(
     task_id: str = "default", *, container_paths: bool | None = None) -> Path | PurePosixPath:
     """Return the ABSOLUTE base directory for resolving relative paths:
     ``_authoritative_workspace_root``, else the process cwd as a last resort."""
+    from agent.runtime_cwd import check_required_cron_workdir
+
+    check_required_cron_workdir()
     root = _authoritative_workspace_root(task_id)
     if container_paths is None:
         container_paths = _uses_container_paths(task_id)
