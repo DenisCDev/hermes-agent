@@ -179,6 +179,7 @@ When `workdir` is set:
 - `AGENTS.md`, `CLAUDE.md`, and `.cursorrules` from that directory are injected into the system prompt (same discovery order as the interactive CLI)
 - `terminal`, `read_file`, `write_file`, `patch`, `search_files`, and `execute_code` all use that directory as their working directory
 - The path must be an absolute directory that exists — relative paths and missing directories are rejected at create / update time
+- If the directory disappears later, that occurrence fails rather than running in another directory
 - Pass `--workdir ""` (or `workdir=""` via the tool) on edit to clear it and restore the old behaviour
 
 :::note Serialization

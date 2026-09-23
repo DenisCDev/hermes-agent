@@ -2584,6 +2584,9 @@ def _resolve_command_cwd(
     path>`` and fails with exit 126. Same guard class as the env-creation
     sanitizers (#50636, #54447); this is the per-command sibling site.
     """
+    from agent.runtime_cwd import check_required_cron_workdir
+
+    check_required_cron_workdir()
     if workdir:
         return workdir
     recorded = get_session_cwd(session_key)

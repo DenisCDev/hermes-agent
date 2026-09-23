@@ -2009,6 +2009,9 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
     (record → registered override → TERMINAL_CWD), so all file-writing
     paths within a session agree on the working directory. (#56047)
     """
+    from agent.runtime_cwd import check_required_cron_workdir
+
+    check_required_cron_workdir()
     if mode != "project":
         return staging_dir
     if task_id:

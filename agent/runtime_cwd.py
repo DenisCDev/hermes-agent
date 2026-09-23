@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
+_REQUIRED_CRON_WORKDIR: ContextVar[str | None] = ContextVar("HERMES_REQUIRED_CRON_WORKDIR", default=None)
 
 # The Python package/source root (this file lives at <root>/agent/runtime_cwd.py).
 # When a backend is launched from, or self-spawns into, this tree (the desktop
@@ -50,6 +51,20 @@ def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
 
 
+def set_required_cron_workdir(cwd: str | None) -> Token:
+    return _REQUIRED_CRON_WORKDIR.set(cwd)
+
+
+def reset_required_cron_workdir(token: Token) -> None:
+    _REQUIRED_CRON_WORKDIR.reset(token)
+
+
+def check_required_cron_workdir() -> None:
+    cwd = _REQUIRED_CRON_WORKDIR.get()
+    if cwd and not Path(cwd).is_dir():
+        raise FileNotFoundError(f"Cron workdir no longer exists: {cwd}")
+
+
 def _session_cwd_override() -> str:
     value = _SESSION_CWD.get()
     if value is _UNSET:
@@ -58,6 +73,7 @@ def _session_cwd_override() -> str:
 
 
 def resolve_agent_cwd() -> Path:
+    check_required_cron_workdir()
     override = _session_cwd_override()
     if override:
         p = Path(override).expanduser()
@@ -74,6 +90,7 @@ def resolve_agent_cwd() -> Path:
 
 
 def resolve_context_cwd() -> Path | None:
+    check_required_cron_workdir()
     # None means "no configured cwd": build_context_files_prompt then falls back
     # to the launch dir (os.getcwd()), correct for a local CLI launched inside a
     # real project. A configured path is validated here (previously it was passed

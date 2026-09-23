@@ -1613,9 +1613,9 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
       - Empty / None → None (feature off, preserves old behaviour).
       - ``~`` is expanded.  Relative paths are rejected — cron jobs run detached
         from any shell cwd, so relative paths have no stable meaning.
-      - The path must exist and be a directory at create/update time.  We do
-        NOT re-check at run time (a user might briefly unmount the dir; the
-        scheduler will just fall back to old behaviour with a logged warning).
+      - The path must exist and be a directory at create/update time.  The
+        scheduler also checks it at run time so a missing workspace fails the
+        occurrence instead of redirecting relative paths elsewhere.
 
     Returns the absolute path string, or None when disabled.
     Raises ValueError on invalid input.
